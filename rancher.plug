@@ -1,0 +1,9 @@
+[Core]
+Name = Rancher
+Module = rancher
+
+[Documentation]
+Description = "Basic rancher monitoring and manipulation"
+
+[Python]
+Version=2+
