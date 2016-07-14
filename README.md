@@ -8,7 +8,7 @@ You need to set 3 env variables.
 - RANCHER_PASS
 
 ## Usage ##
-Initial options: upgrade, finishupgrade, rollback, status
+Initial options: upgrade, finishupgrade, rollback, status  
 To see available options / commands:
 > !rancher help  
 
