@@ -2,6 +2,7 @@ from errbot import BotPlugin, botcmd, webhook
 import requests
 import os
 from requests.auth import HTTPBasicAuth
+from time import sleep
 
 class Rancher(BotPlugin):
     """Rancher Module. Set RANCHER_URL, RANCHER_USER and RANCHER_PASS as env variables"""
@@ -17,87 +18,128 @@ class Rancher(BotPlugin):
         if len(args) == 0 or args[0] in {"--help", "-h", "help"}:
             output = "usage: \n"
             output += "!rancher status|ops (serviceName)\n"
-            output += "!rancher upgrade|update serviceName\n"
-            output += "!rancher ok|finish|confirm|finishupgrade|complete serviceName\n"
-            output += "!rancher abort|revert|rollback|cancel serviceName\n"
-            output += "!rancher scale serviceName scaleNumber\n"
-            return(output)
+            output += "!rancher upgrade|update filter(s)\n"
+            output += "!rancher ok|finish|confirm|finishupgrade|complete filter(s)\n"
+            output += "!rancher abort|revert|rollback|cancel filter(s)\n"
+            output += "!rancher scale filter(s) scaleTo\n"
+            output += "!rancher restart filter(s)\n"
+            yield(output)
+            return
 
         r = requests.get(rurl+"/v1", auth=basic)
         if r.status_code != 200:
-            return("ERROR, Cannot connect to Rancher")
+            yield("ERROR, Cannot connect to Rancher")
+            return
         js = r.json()
 
-        if args[0] in {"status", "ops"}:
-            projects = requests.get(js['links']['projects'], auth=basic).json()
-            output  = "env|name|status|state|scale\n"
-            output += "---|----|------|-----|-----\n"
-            for project in projects['data']:
-                unhealthy=""
-                if project['state'] != "inactive":
-                    services = requests.get(project['links']['services'], auth=basic).json()
-                    for service in services['data']:
-                        if len(args) == 2:
-                            if args[1] != service['name']:
-                                continue
-                        text = project['name']+ "|" +service['name']+ "|" +service['healthState']+ "|" +service['state']+ "|" +str(service['scale'])+"\n"
+        projects = requests.get(js['links']['projects'], auth=basic).json()
+        serviceFound = 0
+        output  = "env|name|status|state|scale\n"
+        output += "---|----|------|-----|-----\n"
+        status  = ""
+
+        #Special case. When issuing scale, last arg must be number, not filter.
+        if args[0] == "scale":
+            try:
+                newscale=int(args[len(args)-1])
+                if newscale < 1:
+                    yield "Sorry boss, got to be at least 1"
+                    return
+            except (IndexError, ValueError):
+                yield "Need to set a (valid) scale number boss..."
+                return
+            del args[-1]
+
+        for project in projects['data']:
+            unhealthy=""
+            if project['state'] != "inactive":
+                services = requests.get(project['links']['services'], auth=basic).json()
+                for service in services['data']:
+                    match = True;
+                    if len(args) > 1:
+                        for i in range(1, len(args)):
+                            if args[i].lower() not in service['name'].lower() and args[i].lower() not in project['name'].lower():
+                                match = False
+                                break
+                    if match:
+                        serviceData = service
+                        serviceFound += 1
+                        projectName = project['name']
+                        text = projectName+ "|" +service['name']+ "|" +service['healthState']+ "|" +service['state']+ "|" +str(service['scale'])+"\n"
                         if service['healthState'] != "healthy":
                             unhealthy += text
                         else:
-                            output += text
-                    output += unhealthy
-                else:
-                    output += project['name'] +"|-|inactive|-|-\n"
-            return(output)
+                            status += text
+                status += unhealthy
+            else:
+                status += project['name'] +"|-|inactive|-|-\n"
+        if args[0] in {"status", "ops"}:
+            output += status;
+            yield(output)
+            return
 
+        if len(args) < 2:
+            yield "Usage: "+args[0]+" filter(s) (newscale)"
+            return
+
+        if serviceFound == 0:
+            yield "No service matched boss."
+            return
+        elif serviceFound > 1:
+            yield "Matched "+str(serviceFound)+" services. Please add further filters to limit results\n"
+            return
+
+        if args[0] in {"upgrade", "update", "up"}:
+            if 'upgrade' not in serviceData['actions']:
+                yield "Action upgrade not available for "+serviceData['name']
+                return
+            actUrl=serviceData['actions']['upgrade']
+            upgrade=serviceData['upgrade']
+            if upgrade == None:
+                yield "Sorry, can't help. Please upgrade using web interface this time boss"
+                return
+            r = requests.post(actUrl, json=upgrade, auth=basic)
+
+        elif args[0] in {"ok", "finish", "finishupgrade", "confirm", "complete"}:
+            if 'finishupgrade' not in serviceData['actions']:
+                yield "Action finishupgrade not available for "+serviceData['name']
+                return
+            actUrl=serviceData['actions']['finishupgrade']
+            r = requests.post(actUrl, auth=basic);
+
+        elif args[0] in {"abort", "revert", "rollback", "cancel"}:
+            if 'rollback' not in serviceData['actions']:
+                yield "Action rollback not available for "+serviceData['name']
+                return
+            actUrl=serviceData['actions']['rollback']
+            r = requests.post(actUrl, auth=basic);
+
+        elif args[0] in {"restart"}:
+            if 'restart' not in serviceData['actions']:
+                yield "Action restart not available for "+serviceData['name']
+                return
+            actUrl=service['actions']['restart']
+            rrs={'rollingRestartStrategy': {}}
+            r = requests.post(actUrl, json=rrs, auth=basic)
+            yield(r.text)
+
+        elif args[0] == "scale":
+            actUrl=serviceData['links']['self']
+            serviceData['scale']=newscale
+            r = requests.put(actUrl, json=serviceData, auth=basic)
+
+        if r.status_code in { 202, 200 }:
+            yield("You got it boss. Performing "+args[0]+" on "+serviceData['name'])
+            for x in range(30):
+                sleep(2)
+                service = requests.get(serviceData['links']['self'], auth=basic).json()
+                if service['state'] in {"upgraded", "active"} and service['healthState'] == "healthy":
+                    yield serviceData['name'] +" is ready Boss"
+                    break
+            if x == 29:
+                yield("It's been a while boss, you'd better check "+serviceData['name']+" out")
+            output += projectName+ "|" +service['name']+ "|" +service['healthState']+ "|" +service['state']+ "|" +str(service['scale'])+"\n"
+            yield(output)
         else:
-            if len(args) < 3:
-                return "Usage: "+args[0]+" service env"
-            else:
-                serviceName = args[1].lower()
-                serviceEnv = args[2].lower()
-                serviceFound = 0
-                projects = requests.get(js['links']['projects'], auth=basic).json()
-                for project in projects['data']:
-                    if project['name'].lower() == serviceEnv:
-                        services = requests.get(project['links']['services'], auth=basic).json()
-                        for service in services['data']:
-                            if service['name'].lower() == serviceName:
-                                serviceData = service;
-                                serviceFound = 1;
-                                break;
-                        break;
-            if serviceFound == 0:
-                return "No service "+args[0]+" found in "+args[1]
-
-            if args[0] in {"upgrade", "update", "up"}:
-                if 'upgrade' not in serviceData['actions']:
-                    return "Action upgrade not available for "+args[1]+ " in " +args[2]
-                actUrl=serviceData['actions']['upgrade']
-                upgrade=serviceData['upgrade']
-                r = requests.post(actUrl, json=upgrade, auth=basic)
-            elif args[0] in {"ok", "finish", "finishupgrade", "confirm", "complete"}:
-                if 'finishupgrade' not in serviceData['actions']:
-                    return "Action finishupgrade not available for "+args[1]+ " in " +args[2]
-                actUrl=serviceData['actions']['finishupgrade']
-                r = requests.post(actUrl, auth=basic);
-            elif args[0] in {"abort", "revert", "rollback", "cancel"}:
-                if 'rollback' not in serviceData['actions']:
-                    return "Action rollback not available for "+args[1]+ " in " +args[2]
-                actUrl=serviceData['actions']['rollback']
-                r = requests.post(actUrl, auth=basic);
-            elif args[0] == "scale":
-                try:
-                    newscale=int(args[3])
-                    if newscale < 1:
-                        return "Sorry boss, got to be at least 1"
-                    actUrl=serviceData['links']['self']
-                    serviceData['scale']=newscale
-                    r = requests.put(actUrl, json=serviceData, auth=basic)
-                except (IndexError, ValueError):
-                    return "Need to set a (valid) scale number boss..."
-            if r.status_code in { 202, 200 }:
-                return("You got it boss.")
-            else:
-                return(args[0] + " failed boss (" +str(r.status.code)+ ")")
-
+            yield(args[0] + " failed boss (" +str(r.status_code)+ ") "+r.text)
+        return
