@@ -121,7 +121,6 @@ class Rancher(BotPlugin):
             actUrl=service['actions']['restart']
             rrs={'rollingRestartStrategy': {}}
             r = requests.post(actUrl, json=rrs, auth=basic)
-            yield(r.text)
 
         elif args[0] == "scale":
             actUrl=serviceData['links']['self']
