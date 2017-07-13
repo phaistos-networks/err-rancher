@@ -2,7 +2,7 @@ from errbot import BotPlugin, botcmd, webhook
 import requests
 import os
 from requests.auth import HTTPBasicAuth
-from time import sleep
+from time import sleep, time
 
 class Rancher(BotPlugin):
     """Rancher Module. Set RANCHER_URL, RANCHER_USER and RANCHER_PASS as env variables"""
@@ -34,8 +34,8 @@ class Rancher(BotPlugin):
 
         projects = requests.get(js['links']['projects'], auth=basic).json()
         serviceFound = 0
-        output  = "env|name|status|state|scale\n"
-        output += "---|----|------|-----|-----\n"
+        output  = "env|name|status|state|scale|alive|total\n"
+        output += "---|----|------|-----|-----|-----|-----\n"
         status  = ""
 
         #Special case. When issuing scale, last arg must be number, not filter.
@@ -65,7 +65,14 @@ class Rancher(BotPlugin):
                         serviceData = service
                         serviceFound += 1
                         projectName = project['name']
-                        text = projectName+ "|" +service['name']+ "|" +service['healthState']+ "|" +service['state']+ "|" +str(service['scale'])+"\n"
+                        text = projectName + "|" \
+                            + service['name'] + "|" \
+                            + service['healthState'] + "|" \
+                            + service['state'] + "|" \
+                            + str(service['scale']) + "|" \
+                            + str(service['currentScale']) + "|" \
+                            + str(len(service['instanceIds'])) \
+                            + "\n"
                         if service['healthState'] != "healthy":
                             unhealthy += text
                         else:
@@ -129,15 +136,32 @@ class Rancher(BotPlugin):
 
         if r.status_code in { 202, 200 }:
             yield("You got it boss. Performing "+args[0]+" on "+serviceData['name'])
-            for x in range(30):
+            startTime = time()
+            x = 0
+            while True:
+                x += 1
                 sleep(2)
                 service = requests.get(serviceData['links']['self'], auth=basic).json()
                 if service['state'] in {"upgraded", "active"} and service['healthState'] == "healthy":
-                    yield serviceData['name'] +" is ready Boss"
+                    yield serviceData['name'] +" is ready Boss (time taken: " + str(round(time() - startTime))+ "s)"
                     break
-            if x == 29:
-                yield("It's been a while boss, you'd better check "+serviceData['name']+" out")
-            output += projectName+ "|" +service['name']+ "|" +service['healthState']+ "|" +service['state']+ "|" +str(service['scale'])+"\n"
+                if (x % 50 == 0):
+                    if service['state'] == "upgrading":
+                        yield("Upgrading: "+serviceData['name'] +" in progress... (" + str(round(time() - startTime)) + "s)\n")
+                    else:
+                        yield("It's been a while boss, you'd better check "+serviceData['name']+" out")
+                        break
+            print(service['currentScale'])
+            print(service['instanceIds'])
+            print(str(len(service['instanceIds'])))
+            output += projectName + "|" \
+                + service['name'] + "|" \
+                + service['healthState'] + "|" \
+                + service['state'] + "|" \
+                + str(service['scale']) + "|" \
+                + str(service['currentScale']) + "|" \
+                + str(len(service['instanceIds'])) \
+                + "\n"
             yield(output)
         else:
             yield(args[0] + " failed boss (" +str(r.status_code)+ ") "+r.text)
