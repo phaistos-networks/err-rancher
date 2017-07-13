@@ -151,9 +151,6 @@ class Rancher(BotPlugin):
                     else:
                         yield("It's been a while boss, you'd better check "+serviceData['name']+" out")
                         break
-            print(service['currentScale'])
-            print(service['instanceIds'])
-            print(str(len(service['instanceIds'])))
             output += projectName + "|" \
                 + service['name'] + "|" \
                 + service['healthState'] + "|" \
